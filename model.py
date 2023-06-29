@@ -1,15 +1,83 @@
 import torch
 from torch import nn
+from torch.utils.data import Dataset,DataLoader
 from torchvision.models import efficientnet_b0
+import cv2
+import os
+import numpy as np
+import albumentations as A
 
-b = 2
-n = 4
-k = 3
+b = 32
+n = 6
+k = 1
 h = w = 105
 d = 1280
 heads = 4
 dropout = 0.1
 layers = 2
+
+class ImgDataset(Dataset):
+    def __init__(self, root_dir, n, k, mul, transform=None):
+        self.root_dir = root_dir
+        self.dirs = self.extract_from_dir(root_dir)
+        self.transform = transform
+        self.n = n
+        self.k = k
+        self.mul = mul
+        self.T = len(self.dirs)
+
+    @staticmethod
+    def extract_from_dir(root_dir):
+        dirs = []
+        for T in os.listdir(root_dir):
+            t = []
+            for C in os.listdir(os.path.join(root_dir, T)):
+                c = []
+                for example in os.listdir(os.path.join(root_dir, T, C)):
+                    c.append(os.path.join(root_dir, T, C, example))
+                t.append(c)
+            dirs.append(t)
+        return dirs
+
+    @staticmethod
+    def transform_char(imgs):
+        # apply same transform to all examples in the same char
+        # imgs has shape k,h,w
+        if np.random.rand() < 0.5:
+            imgs = imgs[:,::-1] # v-flip
+        if np.random.rand() < 0.5:
+            imgs = imgs[:,:,::-1] # h-flip
+        return imgs
+    
+    def sample(self,t):
+        # t is self.dirs[idx]
+        out = []
+        for n_t in np.random.choice(len(t),self.n,replace=False):
+            temp = []
+            for n_exp in np.random.choice(20,self.k+1,replace=False):
+                file_text = t[n_t][n_exp]
+                img = self.load_transform(file_text)
+                temp.append(img)
+            temp = self.transform_char(np.stack(temp,0))
+            out.append(temp)
+        return out
+    
+    def load_transform(self,path):
+        # apply per img transform here
+        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE).astype(np.float32)
+        img /= 255.0
+        if self.transform:
+            img = self.transform(image=img)["image"]
+        return img
+    
+    def __len__(self):
+        return self.T * self.mul # to ensure larger batch_size than len(self.dirs)
+
+    def __getitem__(self, idx):
+        imgs = self.sample(self.dirs[idx%self.T])
+        imgs = np.stack(imgs,0)
+        imgs = imgs.reshape(self.n*(self.k+1),105,105)
+        return imgs
 
 class feedfwd(nn.Module):
     def __init__(self, d, dropout):
