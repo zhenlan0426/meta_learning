@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch.nn.parameter import Parameter
 from torch.utils.data import Dataset,DataLoader
 from torchvision.models import efficientnet_b0
 import cv2
@@ -14,7 +15,7 @@ h = w = 105
 d = 1280
 heads = 4
 dropout = 0.1
-layers = 2
+layers = 3
 
 class ImgDataset(Dataset):
     def __init__(self, root_dir, n, k, mul, transform=None):
@@ -103,7 +104,37 @@ class Atten_fwd(nn.Module):
         out = self.fwd(temp,out)
         return out
     
-class AttenMeta(nn.Module):
+class AttenMeta_linearHead(nn.Module):
+    def __init__(self, d, dropout,layers,usePreTrain=False):
+        super().__init__()
+        cnn = efficientnet_b0(weights='IMAGENET1K_V1' if usePreTrain else None)
+        cnn.classifier = nn.Identity()
+        self.cnn = cnn
+        self.atten = nn.Sequential(*[Atten_fwd(d,dropout) for _ in range(layers)])
+        self.linear = nn.Linear(d,n)
+        self.loss_fn = nn.CrossEntropyLoss()
+
+        self.input_target = Parameter(torch.randn(n,3)/n)
+        y = torch.arange(n).reshape(1,n).broadcast_to(b,n).reshape(b*n)
+        self.register_buffer('y',y)
+        #self.register_parameter('input_target',input_target)
+
+    def forward(self, x, IsTrain):
+        # x with shape (b,n*(k+1),h,w)
+        input_target = self.input_target.reshape(1,n,1,3,1,1).broadcast_to(b,n,k+1,3,h,w).reshape(b*n*(k+1),3,h,w)
+        x = x.reshape(b*n*(k+1),1,h,w).broadcast_to(b*n*(k+1),3,h,w) + input_target# broadcast_to to 3 as model needs (R,G,B)
+        out = self.cnn(x)
+        out = out.reshape(b,n*(k+1),-1)
+        out = self.atten(out).reshape(b,n,k+1,d)[:,:,-1,:].reshape(b*n,d)
+        yhat = self.linear(out)
+
+        if IsTrain:
+            loss = self.loss_fn(yhat,self.y)
+            return loss
+        else:
+            return yhat
+        
+class AttenMeta_attenHead(nn.Module):
     def __init__(self, d, dropout,layers,usePreTrain=False):
         super().__init__()
         cnn = efficientnet_b0(weights='IMAGENET1K_V1' if usePreTrain else None)
@@ -137,5 +168,3 @@ class AttenMeta(nn.Module):
             return loss
         else:
             return yhat
-        
-
