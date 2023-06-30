@@ -121,8 +121,10 @@ class AttenMeta_linearHead(nn.Module):
 
     def forward(self, x, IsTrain):
         # x with shape (b,n*(k+1),h,w)
-        input_target = self.input_target.reshape(1,n,1,3,1,1).broadcast_to(b,n,k+1,3,h,w).reshape(b*n*(k+1),3,h,w)
-        x = x.reshape(b*n*(k+1),1,h,w).broadcast_to(b*n*(k+1),3,h,w) + input_target# broadcast_to to 3 as model needs (R,G,B)
+        input_target = self.input_target.reshape(1,n,1,3,1,1).broadcast_to(b,n,k,3,h,w)
+        x = x.reshape(b,n,(k+1),1,h,w).repeat(1,1,1,3,1,1)
+        x[:,:,:k] += input_target
+        x = x.reshape(b*n*(k+1),3,h,w)# broadcast_to to 3 as model needs (R,G,B)
         out = self.cnn(x)
         out = out.reshape(b,n*(k+1),-1)
         out = self.atten(out).reshape(b,n,k+1,d)[:,:,-1,:].reshape(b*n,d)
