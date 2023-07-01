@@ -104,31 +104,44 @@ class Atten_fwd(nn.Module):
         out = self.fwd(temp,out)
         return out
     
-class AttenMeta_linearHead(nn.Module):
-    def __init__(self, d, dropout,layers,usePreTrain=False):
+class FreezeGrad(object):
+    def set_grad(self,grad):
+        for param in self.cnn.parameters():
+            param.requires_grad = grad
+    def get_grad(self):
+        return [p for p in self.parameters() if p.requires_grad]
+    
+class AttenMeta_linearHead(nn.Module,FreezeGrad):
+    def __init__(self, d, dropout,layers,usePreTrain=False,):
         super().__init__()
         cnn = efficientnet_b0(weights='IMAGENET1K_V1' if usePreTrain else None)
         cnn.classifier = nn.Identity()
         self.cnn = cnn
         self.atten = nn.Sequential(*[Atten_fwd(d,dropout) for _ in range(layers)])
-        self.linear = nn.Linear(d,n)
+        #self.linear = nn.Linear(d,n)
         self.loss_fn = nn.CrossEntropyLoss()
 
-        self.input_target = Parameter(torch.randn(n,3)/n)
+        #self.input_target = Parameter(torch.randn(n,3)/n)
+        self.input_target = Parameter(torch.randn(n,d)/np.sqrt(d*n))
+        self.output_target = Parameter(torch.randn(d,)/np.sqrt(d))
         y = torch.arange(n).reshape(1,n).broadcast_to(b,n).reshape(b*n)
         self.register_buffer('y',y)
         #self.register_parameter('input_target',input_target)
 
     def forward(self, x, IsTrain):
         # x with shape (b,n*(k+1),h,w)
-        input_target = self.input_target.reshape(1,n,1,3,1,1).broadcast_to(b,n,k,3,h,w)
-        x = x.reshape(b,n,(k+1),1,h,w).repeat(1,1,1,3,1,1)
-        x[:,:,:k] += input_target
-        x = x.reshape(b*n*(k+1),3,h,w)# broadcast_to to 3 as model needs (R,G,B)
-        out = self.cnn(x)
+        #input_target = self.input_target.reshape(1,n,1,3,1,1).broadcast_to(b,n,k+1,3,h,w).reshape(b*n*(k+1),3,h,w)
+        x = x.reshape(b*n*(k+1),1,h,w).broadcast_to(b*n*(k+1),3,h,w) # broadcast_to to 3 as model needs (R,G,B)
+        out = self.cnn(x) # b*n*(k+1),d
+        
+        out = out.reshape(b,n,(k+1),-1)
+        out[:,:,:k] += self.input_target.reshape(1,n,1,d)
+        out[:,:,k] += self.output_target
         out = out.reshape(b,n*(k+1),-1)
+        
         out = self.atten(out).reshape(b,n,k+1,d)[:,:,-1,:].reshape(b*n,d)
-        yhat = self.linear(out)
+        #yhat = self.linear(out)
+        yhat = out@(self.input_target.T)
 
         if IsTrain:
             loss = self.loss_fn(yhat,self.y)
@@ -136,7 +149,7 @@ class AttenMeta_linearHead(nn.Module):
         else:
             return yhat
         
-class AttenMeta_attenHead(nn.Module):
+class AttenMeta_attenHead(nn.Module,FreezeGrad):
     def __init__(self, d, dropout,layers,usePreTrain=False):
         super().__init__()
         cnn = efficientnet_b0(weights='IMAGENET1K_V1' if usePreTrain else None)
